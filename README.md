@@ -53,5 +53,5 @@ python main.py predict --model-path emnist_character_model.pth --image path\to\i
 ## Notes
 
 - The app expects `emnist_character_model.pth` to exist in the current folder.
-- EMNIST data is downloaded into the `data/` folder.
+- EMNIST data should be downloaded to a directory `data/EMNIST/raw`.
 - `tkinter` is included with standard Python on Windows, so no extra install is usually required.
