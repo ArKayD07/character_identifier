@@ -12,12 +12,12 @@ A small PyTorch project for training an EMNIST character classifier and predicti
 
 1. Open a terminal in `character_identifier`:
    ```powershell
-   cd C:\Users\krisi\Desktop\Code\character_identifier
+   cd character_identifier
    ```
 
 2. Install dependencies:
    ```powershell
-   C:/Users/krisi/AppData/Local/Python/pythoncore-3.14-64/python.exe -m pip install -r requirements.txt
+   python -m pip install -r requirements.txt
    ```
 
 ## Train the model
