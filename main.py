@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 
 import torch
 import torch.nn as nn
@@ -32,7 +33,31 @@ class EMNISTClassifier(nn.Module):
         return self.classifier(x)
 
 
+def check_environment():
+    print("Environment check:")
+    print(f"  Python version: {sys.version.split()[0]}")
+    print(f"  Torch version: {torch.__version__}")
+    cuda_available = torch.cuda.is_available()
+    print(f"  CUDA available: {cuda_available}")
+    if cuda_available:
+        try:
+            print(f"  CUDA device: {torch.cuda.get_device_name(0)}")
+        except Exception:
+            pass
+    print()
+
+
+def ensure_directory_exists(path: str):
+    directory = os.path.dirname(path)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+
+
 def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, limit_test: int | None):
+    if not os.path.isdir(data_dir):
+        print(f"Creating data directory: {data_dir}")
+        os.makedirs(data_dir, exist_ok=True)
+
     transform = transforms.Compose(
         [
             transforms.ToTensor(),
@@ -40,28 +65,42 @@ def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, l
         ]
     )
 
-    train_dataset = datasets.EMNIST(
-        root=data_dir,
-        split="byclass",
-        train=True,
-        download=True,
-        transform=transform,
-    )
-    test_dataset = datasets.EMNIST(
-        root=data_dir,
-        split="byclass",
-        train=False,
-        download=True,
-        transform=transform,
-    )
+    try:
+        train_dataset = datasets.EMNIST(
+            root=data_dir,
+            split="byclass",
+            train=True,
+            download=True,
+            transform=transform,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load EMNIST training data: {exc}") from exc
+
+    try:
+        test_dataset = datasets.EMNIST(
+            root=data_dir,
+            split="byclass",
+            train=False,
+            download=True,
+            transform=transform,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load EMNIST test data: {exc}") from exc
 
     if limit_train is not None:
         train_dataset = Subset(train_dataset, list(range(min(limit_train, len(train_dataset)))))
     if limit_test is not None:
         test_dataset = Subset(test_dataset, list(range(min(limit_test, len(test_dataset)))))
 
+    if len(train_dataset) == 0:
+        raise RuntimeError("No training samples were loaded from EMNIST.")
+    if len(test_dataset) == 0:
+        raise RuntimeError("No test samples were loaded from EMNIST.")
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+
+    print(f"Loaded EMNIST data: {len(train_dataset)} train samples, {len(test_dataset)} test samples")
 
     classes = train_dataset.dataset.classes if isinstance(train_dataset, Subset) else train_dataset.classes
     return train_loader, test_loader, classes
@@ -69,8 +108,10 @@ def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, l
 
 def train_model(data_dir: str, model_path: str, epochs: int, batch_size: int, limit_train: int | None, limit_test: int | None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ensure_directory_exists(model_path)
     train_loader, test_loader, classes = build_dataloaders(data_dir, batch_size, limit_train, limit_test)
     num_classes = len(classes)
+    print(f"Training model on device: {device}")
 
     model = EMNISTClassifier(num_classes=num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
@@ -124,6 +165,8 @@ def preprocess_image(image_path: str):
 def predict_image(model_path: str, image_path: str):
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
+    if not os.path.isfile(image_path):
+        raise FileNotFoundError(f"Image file not found: {image_path}")
 
     checkpoint = torch.load(model_path, map_location="cpu")
     classes = checkpoint["classes"]
@@ -160,6 +203,20 @@ def main():
 
     args = parser.parse_args()
 
+    print(f"Running command: {args.command}")
+    check_environment()
+    print(f"Model path: {args.model_path}")
+    if args.command == "train":
+        print(f"Data directory: {args.data_dir}")
+        print(f"Epochs: {args.epochs}")
+        print(f"Batch size: {args.batch_size}")
+        if args.limit_train is not None:
+            print(f"Training sample limit: {args.limit_train}")
+        if args.limit_test is not None:
+            print(f"Test sample limit: {args.limit_test}")
+    else:
+        print(f"Image path: {args.image}")
+
     if args.command == "train":
         train_model(
             data_dir=args.data_dir,
@@ -174,4 +231,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
