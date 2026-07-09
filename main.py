@@ -11,7 +11,7 @@ from torchvision import datasets, transforms
 
 
 class EMNISTClassifier(nn.Module):
-    def __init__(self, num_classes: int):
+    def __init__(self, num_classes: int, dropout: float = 0.5):
         super().__init__()
         self.features = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=3, padding=1),
@@ -25,6 +25,7 @@ class EMNISTClassifier(nn.Module):
             nn.Flatten(),
             nn.Linear(32 * 7 * 7, 128),
             nn.ReLU(),
+            nn.Dropout(p=dropout),
             nn.Linear(128, num_classes),
         )
 
@@ -58,7 +59,17 @@ def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, l
         print(f"Creating data directory: {data_dir}")
         os.makedirs(data_dir, exist_ok=True)
 
-    transform = transforms.Compose(
+    # Use simple augmentations on the training split to reduce overfitting
+    train_transform = transforms.Compose(
+        [
+            transforms.RandomRotation(10),
+            transforms.RandomAffine(0, translate=(0.05, 0.05)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,)),
+        ]
+    )
+
+    test_transform = transforms.Compose(
         [
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,)),
@@ -66,12 +77,12 @@ def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, l
     )
 
     try:
-        train_dataset = datasets.EMNIST(
+        full_train_dataset = datasets.EMNIST(
             root=data_dir,
             split="byclass",
             train=True,
             download=True,
-            transform=transform,
+            transform=train_transform,
         )
     except Exception as exc:
         raise RuntimeError(f"Failed to load EMNIST training data: {exc}") from exc
@@ -82,11 +93,12 @@ def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, l
             split="byclass",
             train=False,
             download=True,
-            transform=transform,
+            transform=test_transform,
         )
     except Exception as exc:
         raise RuntimeError(f"Failed to load EMNIST test data: {exc}") from exc
 
+    train_dataset = full_train_dataset
     if limit_train is not None:
         train_dataset = Subset(train_dataset, list(range(min(limit_train, len(train_dataset)))))
     if limit_test is not None:
@@ -102,7 +114,7 @@ def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, l
 
     print(f"Loaded EMNIST data: {len(train_dataset)} train samples, {len(test_dataset)} test samples")
 
-    classes = train_dataset.dataset.classes if isinstance(train_dataset, Subset) else train_dataset.classes
+    classes = full_train_dataset.classes
     return train_loader, test_loader, classes
 
 
@@ -113,9 +125,15 @@ def train_model(data_dir: str, model_path: str, epochs: int, batch_size: int, li
     num_classes = len(classes)
     print(f"Training model on device: {device}")
 
-    model = EMNISTClassifier(num_classes=num_classes).to(device)
+    model = EMNISTClassifier(num_classes=num_classes, dropout=0.5).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    # Add small weight decay to regularize and reduce overfitting
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=1)
+
+    best_test_loss = float("inf")
+    epochs_no_improve = 0
+    early_stop_patience = 3
 
     for epoch in range(epochs):
         model.train()
@@ -128,6 +146,9 @@ def train_model(data_dir: str, model_path: str, epochs: int, batch_size: int, li
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
+
+        # Average training loss
+        avg_train_loss = running_loss / len(train_loader)
 
         test_loss = 0.0
         correct = 0
@@ -143,10 +164,31 @@ def train_model(data_dir: str, model_path: str, epochs: int, batch_size: int, li
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
 
+        avg_test_loss = test_loss / len(test_loader)
+        accuracy = 100 * correct / total if total > 0 else 0.0
+
+        # Step the scheduler with validation loss
+        try:
+            scheduler.step(avg_test_loss)
+        except Exception:
+            pass
+
         print(
-            f"Epoch {epoch + 1}/{epochs} | train_loss={running_loss / len(train_loader):.4f} | "
-            f"test_loss={test_loss / len(test_loader):.4f} | accuracy={100 * correct / total:.2f}%"
+            f"Epoch {epoch + 1}/{epochs} | train_loss={avg_train_loss:.4f} | "
+            f"test_loss={avg_test_loss:.4f} | accuracy={accuracy:.2f}%"
         )
+
+        # Save best model (early stopping based on test loss)
+        if avg_test_loss < best_test_loss - 1e-4:
+            best_test_loss = avg_test_loss
+            epochs_no_improve = 0
+            torch.save({"model_state": model.state_dict(), "classes": classes}, model_path)
+            print(f"New best model saved (test_loss={best_test_loss:.4f})")
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= early_stop_patience:
+                print(f"Early stopping: no improvement for {early_stop_patience} epochs")
+                break
 
     torch.save({"model_state": model.state_dict(), "classes": classes}, model_path)
     print(f"Model saved to {model_path}")
