@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw, ImageOps
 
 from main import EMNISTClassifier
 
-MODEL_PATH = "emnist_character_model.pth"
+MODEL_PATH = "mnist_character_model.pth"
 CANVAS_SIZE = 280
 DRAW_WIDTH = 20
 
@@ -101,7 +101,9 @@ class DrawApp(tk.Tk):
         image = self.canvas_image.copy()
         image = ImageOps.autocontrast(image)
         image = image.resize((28, 28), resample=Image.Resampling.LANCZOS)
-        image = ImageOps.invert(image)
+        # Note: no invert here - the canvas is already drawn white-on-black
+        # (matching the MNIST/EMNIST training format), unlike photo inputs
+        # handled by main.py's preprocess_image(), which do need inverting.
         array = np.array(image, dtype=np.float32) / 255.0
         array = (array - 0.1307) / 0.3081
         tensor = torch.tensor(array).unsqueeze(0).unsqueeze(0)

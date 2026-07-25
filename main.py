@@ -54,10 +54,26 @@ def ensure_directory_exists(path: str):
         os.makedirs(directory, exist_ok=True)
 
 
-def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, limit_test: int | None):
+# Datasets supported by the training pipeline. EMNIST remains the default to
+# preserve existing behavior; MNIST is available as an additional option.
+SUPPORTED_DATASETS = ("emnist", "mnist")
+
+
+def build_dataloaders(
+    data_dir: str,
+    batch_size: int,
+    limit_train: int | None,
+    limit_test: int | None,
+    dataset: str = "emnist",
+):
     if not os.path.isdir(data_dir):
         print(f"Creating data directory: {data_dir}")
         os.makedirs(data_dir, exist_ok=True)
+
+    dataset = (dataset or "emnist").lower()
+    if dataset not in SUPPORTED_DATASETS:
+        raise ValueError(f"Unsupported dataset: {dataset}. Choose one of {SUPPORTED_DATASETS}.")
+    dataset_label = "MNIST" if dataset == "mnist" else "EMNIST"
 
     # Use simple augmentations on the training split to reduce overfitting
     train_transform = transforms.Compose(
@@ -77,26 +93,42 @@ def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, l
     )
 
     try:
-        full_train_dataset = datasets.EMNIST(
-            root=data_dir,
-            split="byclass",
-            train=True,
-            download=True,
-            transform=train_transform,
-        )
+        if dataset == "mnist":
+            full_train_dataset = datasets.MNIST(
+                root=data_dir,
+                train=True,
+                download=True,
+                transform=train_transform,
+            )
+        else:
+            full_train_dataset = datasets.EMNIST(
+                root=data_dir,
+                split="byclass",
+                train=True,
+                download=True,
+                transform=train_transform,
+            )
     except Exception as exc:
-        raise RuntimeError(f"Failed to load EMNIST training data: {exc}") from exc
+        raise RuntimeError(f"Failed to load {dataset_label} training data: {exc}") from exc
 
     try:
-        test_dataset = datasets.EMNIST(
-            root=data_dir,
-            split="byclass",
-            train=False,
-            download=True,
-            transform=test_transform,
-        )
+        if dataset == "mnist":
+            test_dataset = datasets.MNIST(
+                root=data_dir,
+                train=False,
+                download=True,
+                transform=test_transform,
+            )
+        else:
+            test_dataset = datasets.EMNIST(
+                root=data_dir,
+                split="byclass",
+                train=False,
+                download=True,
+                transform=test_transform,
+            )
     except Exception as exc:
-        raise RuntimeError(f"Failed to load EMNIST test data: {exc}") from exc
+        raise RuntimeError(f"Failed to load {dataset_label} test data: {exc}") from exc
 
     train_dataset = full_train_dataset
     if limit_train is not None:
@@ -105,25 +137,35 @@ def build_dataloaders(data_dir: str, batch_size: int, limit_train: int | None, l
         test_dataset = Subset(test_dataset, list(range(min(limit_test, len(test_dataset)))))
 
     if len(train_dataset) == 0:
-        raise RuntimeError("No training samples were loaded from EMNIST.")
+        raise RuntimeError(f"No training samples were loaded from {dataset_label}.")
     if len(test_dataset) == 0:
-        raise RuntimeError("No test samples were loaded from EMNIST.")
+        raise RuntimeError(f"No test samples were loaded from {dataset_label}.")
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
-    print(f"Loaded EMNIST data: {len(train_dataset)} train samples, {len(test_dataset)} test samples")
+    print(f"Loaded {dataset_label} data: {len(train_dataset)} train samples, {len(test_dataset)} test samples")
 
     classes = full_train_dataset.classes
     return train_loader, test_loader, classes
 
 
-def train_model(data_dir: str, model_path: str, epochs: int, batch_size: int, limit_train: int | None, limit_test: int | None):
+def train_model(
+    data_dir: str,
+    model_path: str,
+    epochs: int,
+    batch_size: int,
+    limit_train: int | None,
+    limit_test: int | None,
+    dataset: str = "emnist",
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ensure_directory_exists(model_path)
-    train_loader, test_loader, classes = build_dataloaders(data_dir, batch_size, limit_train, limit_test)
+    train_loader, test_loader, classes = build_dataloaders(
+        data_dir, batch_size, limit_train, limit_test, dataset=dataset
+    )
     num_classes = len(classes)
-    print(f"Training model on device: {device}")
+    print(f"Training model on dataset: {dataset} | device: {device}")
 
     model = EMNISTClassifier(num_classes=num_classes, dropout=0.5).to(device)
     criterion = nn.CrossEntropyLoss()
@@ -228,12 +270,13 @@ def predict_image(model_path: str, image_path: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train an EMNIST-based character classifier and predict from an image")
+    parser = argparse.ArgumentParser(description="Train an EMNIST/MNIST-based character classifier and predict from an image")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    train_parser = subparsers.add_parser("train", help="Train a model on EMNIST")
-    train_parser.add_argument("--data-dir", default="data", help="Directory used for EMNIST data")
-    train_parser.add_argument("--model-path", default="emnist_character_model.pth", help="Path for the trained model")
+    train_parser = subparsers.add_parser("train", help="Train a model on EMNIST or MNIST")
+    train_parser.add_argument("--dataset", choices=list(SUPPORTED_DATASETS), default="emnist", help="Dataset to train on (emnist or mnist)")
+    train_parser.add_argument("--data-dir", default="data", help="Directory used for the dataset")
+    train_parser.add_argument("--model-path", default=None, help="Path for the trained model (defaults to '<dataset>_character_model.pth')")
     train_parser.add_argument("--epochs", type=int, default=3, help="Training epochs")
     train_parser.add_argument("--batch-size", type=int, default=64, help="Training batch size")
     train_parser.add_argument("--limit-train", type=int, default=None, help="Optional limit for the number of training samples")
@@ -245,10 +288,14 @@ def main():
 
     args = parser.parse_args()
 
+    if args.command == "train" and getattr(args, "model_path", None) is None:
+        args.model_path = "emnist_character_model.pth" if args.dataset == "emnist" else f"{args.dataset}_character_model.pth"
+
     print(f"Running command: {args.command}")
     check_environment()
     print(f"Model path: {args.model_path}")
     if args.command == "train":
+        print(f"Dataset: {args.dataset}")
         print(f"Data directory: {args.data_dir}")
         print(f"Epochs: {args.epochs}")
         print(f"Batch size: {args.batch_size}")
@@ -267,6 +314,7 @@ def main():
             batch_size=args.batch_size,
             limit_train=args.limit_train,
             limit_test=args.limit_test,
+            dataset=args.dataset,
         )
     elif args.command == "predict":
         predict_image(model_path=args.model_path, image_path=args.image)
